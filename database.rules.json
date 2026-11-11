@@ -1,0 +1,34 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".validate": "$code.matches(/^[A-Z0-9]{4}$/)",
+        "players": {
+          "$uid": {
+            "name": { ".validate": "newData.isString() && newData.val().length <= 16" }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "$code": {
+        ".read": "auth != null && root.child('rooms').child($code).child('meta/host').val() === auth.uid",
+        ".write": "auth != null && root.child('rooms').child($code).child('meta/host').val() === auth.uid",
+        "$uid": {
+          ".read": "auth != null && auth.uid === $uid"
+        }
+      }
+    },
+    "emotes": {
+      "$code": {
+        ".read": "auth != null",
+        "$id": {
+          ".write": "auth != null && (newData.child('uid').val() === auth.uid || (!newData.exists() && data.child('uid').val() === auth.uid))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['uid','e','at']) && newData.child('e').isString() && newData.child('e').val().length <= 8)"
+        }
+      }
+    }
+  }
+}
