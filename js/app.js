@@ -14,6 +14,9 @@ const ROLE = {
 };
 const POINTS = { civil: 2, undercover: 10, mrwhite: 6 };
 const CLUE_TIMES = [30, 45, 60, 90, 0];
+const DEBATE_TIMES = [30, 60, 90, 120, 180]; // temps de parole avant le vote (non passable)
+const VOTE_TIMES = [15, 30, 45, 60];         // temps de vote (l'hôte peut le clore)
+const DEFAULT_SETTINGS = { undercover: 1, mrwhite: false, clueTime: 45, debateTime: 60, voteTime: 30 };
 const MAX_PLAYERS = 16;
 const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
@@ -110,7 +113,7 @@ function toast(msg, kind = "") {
 const R = {
   meta: () => S.room?.meta || {},
   status: () => S.room?.meta?.status,
-  settings: () => S.room?.meta?.settings || { undercover: 1, mrwhite: false, clueTime: 45 },
+  settings: () => ({ ...DEFAULT_SETTINGS, ...(S.room?.meta?.settings || {}) }),
   isHost: () => S.room?.meta?.host === me(),
   players: () => S.room?.players || {},
   list: () => Object.entries(R.players()).map(([id, p]) => ({ id, ...p })).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0)),
@@ -134,7 +137,7 @@ async function createRoom() {
   }
   const now = store.now();
   await store.set(`rooms/${code}`, {
-    meta: { host: me(), status: "lobby", createdAt: now, settings: { undercover: 1, mrwhite: false, clueTime: 45 } },
+    meta: { host: me(), status: "lobby", createdAt: now, settings: { ...DEFAULT_SETTINGS } },
     players: { [me()]: { ...profilePayload(), joinedAt: now, online: true, alive: true, score: 0 } },
   });
   await enterRoom(code);
@@ -257,6 +260,7 @@ function onRoomChange(prevStatus) {
     S.showWord = false;
     S.myVoteDraft = null;
     if (status === "reveal") S.revealFlipped = false;
+    if (status === "debate") sfx.turn();
     if (status === "vote") sfx.vote();
     if (status === "elim" || status === "mrwhite") sfx.elim();
     if (status === "over") { sfx.win(); setTimeout(confetti, 200); }
@@ -324,6 +328,24 @@ setInterval(() => {
   const ghost = (!p || !p.online || !p.alive) && now - (g.turnStartedAt || 0) > 5000;
   if (expired || ghost) once(`skip-${g.round}-${g.turn}`, () => advanceTurn(null, true));
 }, 1000);
+
+// Timer de l'hôte : fin du temps de parole -> vote, fin du temps de vote -> dépouillement
+setInterval(() => {
+  if (!S.room || !R.isHost()) return;
+  const st = R.status(), g = R.game(), now = store.now();
+  if (st === "debate" && g.debateEndsAt && now > g.debateEndsAt + 300) once(`vote-${g.round}`, startVote);
+  if (st === "vote" && g.voteEndsAt && now > g.voteEndsAt + 300) once(`resolve-${g.round}`, resolveVote);
+}, 500);
+
+async function startVote() {
+  if (R.status() !== "debate") return;
+  const now = store.now();
+  await store.update(roomPath(), {
+    "meta/status": "vote",
+    "game/voteStartedAt": now,
+    "game/voteEndsAt": now + R.settings().voteTime * 1000,
+  });
+}
 
 async function startGame() {
   const players = R.list().filter((p) => p.online);
@@ -399,7 +421,14 @@ async function advanceTurn(text, skipped = false) {
     "game/turnEndsAt": t ? now + t * 1000 : null,
     [`players/${who}/typing`]: null,
   };
-  if (next >= g.order.length) up["meta/status"] = "vote";
+  if (next >= g.order.length) {
+    // Tous les indices sont donnés : temps de parole obligatoire avant le vote
+    up["meta/status"] = "debate";
+    up["game/turnEndsAt"] = null;
+    up["game/debateStartedAt"] = now;
+    up["game/debateEndsAt"] = now + R.settings().debateTime * 1000;
+    up["game/voteEndsAt"] = null;
+  }
   await store.update(roomPath(), up);
 }
 
@@ -412,7 +441,10 @@ async function resolveVote() {
     if (aliveIds.has(voter) && aliveIds.has(target)) tally[target] = (tally[target] || 0) + 1;
   }
   const entries = Object.entries(tally);
-  if (!entries.length) { S.hostDone.delete(`resolve-${R.game().round}`); return toast("Personne n'a voté", "warn"); }
+  if (!entries.length) {
+    // Temps écoulé (ou vote clos) sans aucun vote : personne n'est éliminé
+    return store.update(roomPath(), { "meta/status": "elim", "game/elim": { none: true }, "game/mwGuess": null, "game/mwFail": null });
+  }
   const top = Math.max(...entries.map(([, c]) => c));
   const tied = entries.filter(([, c]) => c === top).map(([id]) => id);
   const target = pick(tied);
@@ -677,7 +709,8 @@ function rulesModal() {
         <li><b>🕵️ Undercover</b> : un mot proche mais différent… et il ne sait pas qu'il est l'intrus !</li>
         <li><b>👻 Mr. White</b> : aucun mot. Il bluffe et improvise.</li>
         <li>Chacun son tour, donne <b>un indice</b> sur ton mot, sans le dire.</li>
-        <li>Puis tout le monde <b>vote</b> pour éliminer un suspect.</li>
+        <li>Ensuite, <b>temps de parole</b> : débattez à voix haute (impossible de le passer).</li>
+        <li>Puis tout le monde <b>vote</b> pour éliminer un suspect, avant la fin du chrono.</li>
         <li>Mr. White éliminé ? Il peut gagner en devinant le mot des civils.</li>
       </ol>
       <div class="win-rules">
@@ -754,6 +787,18 @@ function renderLobby() {
           ${CLUE_TIMES.map((t) => `<button class="chip ${set.clueTime === t ? "on" : ""}" data-time="${t}">${t ? t + "s" : "∞"}</button>`).join("")}
         </div>
       </div>
+      <div class="set-row col">
+        <div><div class="set-name">🗣️ Temps de parole</div><div class="set-sub">débat avant le vote, impossible à passer</div></div>
+        <div class="chips">
+          ${DEBATE_TIMES.map((t) => `<button class="chip ${set.debateTime === t ? "on" : ""}" data-debate="${t}">${t < 60 ? t + "s" : Math.floor(t / 60) + " min" + (t % 60 ? " " + (t % 60) : "")}</button>`).join("")}
+        </div>
+      </div>
+      <div class="set-row col">
+        <div><div class="set-name">🗳️ Temps de vote</div><div class="set-sub">l'hôte peut clore le vote plus tôt</div></div>
+        <div class="chips">
+          ${VOTE_TIMES.map((t) => `<button class="chip ${set.voteTime === t ? "on" : ""}" data-votetime="${t}">${t}s</button>`).join("")}
+        </div>
+      </div>
       <div class="compo">
         <span class="tag civil">🙂 ${civ} civil${civ > 1 ? "s" : ""}</span>
         <span class="tag under">🕵️ ${und}</span>
@@ -785,6 +830,8 @@ function renderLobby() {
       updateSettings({ mrwhite: !set.mrwhite });
     };
     app.querySelectorAll("[data-time]").forEach((b) => (b.onclick = () => updateSettings({ clueTime: +b.dataset.time })));
+    app.querySelectorAll("[data-debate]").forEach((b) => (b.onclick = () => updateSettings({ debateTime: +b.dataset.debate })));
+    app.querySelectorAll("[data-votetime]").forEach((b) => (b.onclick = () => updateSettings({ voteTime: +b.dataset.votetime })));
     $("#start").onclick = withBusy($("#start"), startGame);
   }
   bindEmotes();
@@ -993,8 +1040,18 @@ function renderDock() {
         </div>
         <div class="timer"><div class="timer-fill" id="timerFill"></div></div>`;
       $("#skip") && ($("#skip").onclick = () => { if (confirm(`Passer le tour de ${cur?.name} ?`)) advanceTurn(null, true); });
+    } else if (st === "debate") {
+      dock.innerHTML = `
+        <div class="debate-dock">
+          <div class="vote-title">🗣️ Temps de parole</div>
+          <div class="vote-sub">Débattez à voix haute : qui est l'intrus ? Le vote s'ouvre à la fin du chrono.</div>
+          <div class="timer"><div class="timer-fill" id="timerFill"></div></div>
+        </div>`;
     } else if (st === "vote") {
-      dock.innerHTML = `<div class="vote-dock" id="voteDock"></div>`;
+      dock.innerHTML = `
+        <div class="vote-dock"><div class="vote-inner" id="voteDock"></div>
+          <div class="timer"><div class="timer-fill" id="timerFill"></div></div>
+        </div>`;
     } else {
       dock.innerHTML = "";
     }
@@ -1006,19 +1063,27 @@ function renderDock() {
     if (vd) vd.innerHTML = `
       <div class="vote-title">${amAlive ? (votes[me()] ? `Tu votes contre <b>${esc(R.p(votes[me()])?.name)}</b> — touche un autre joueur pour changer` : "🗳️ Touche un joueur pour l'accuser") : "👻 Les vivants votent…"}</div>
       <div class="vote-sub">${pending.length ? `En attente : ${pending.map((p) => esc(p.avatar)).join(" ")}` : "Dépouillement…"}</div>
-      ${R.isHost() && pending.length ? `<button class="btn ghost sm" id="forceVote">Clore le vote</button>` : ""}`;
-    $("#forceVote") && ($("#forceVote").onclick = () => { S.hostDone.add(`resolve-${R.game().round}`); resolveVote(); });
+      ${R.isHost() && pending.length ? `<button class="btn ghost sm" id="forceVote">Clore le vote ⏭</button>` : ""}`;
+    $("#forceVote") && ($("#forceVote").onclick = () => {
+      if (!confirm("Clore le vote maintenant ?")) return;
+      once(`resolve-${R.game().round}`, resolveVote);
+    });
   }
 }
 
-// Animation de la barre de temps
+// Animation de la barre de temps (indice, temps de parole, vote)
 (function tickTimer() {
   const fill = document.getElementById("timerFill");
-  if (fill && S.room && R.status() === "clue") {
-    const g = R.game();
-    if (g.turnEndsAt) {
-      const total = R.settings().clueTime * 1000;
-      const left = Math.max(0, g.turnEndsAt - store.now());
+  const st = S.room && R.status();
+  if (fill && (st === "clue" || st === "debate" || st === "vote")) {
+    const g = R.game(), set = R.settings();
+    const [endsAt, secs] =
+      st === "clue" ? [g.turnEndsAt, set.clueTime] :
+      st === "debate" ? [g.debateEndsAt, set.debateTime] :
+      [g.voteEndsAt, set.voteTime];
+    if (endsAt) {
+      const total = secs * 1000;
+      const left = Math.max(0, endsAt - store.now());
       const pct = Math.max(0, Math.min(100, (left / total) * 100));
       fill.style.width = pct + "%";
       fill.classList.toggle("hurry", left < 10000);
@@ -1086,6 +1151,15 @@ function bindReveal() {
 function elimOverlay() {
   const st = R.status(), g = R.game();
   const e = g.elim || {};
+  if (e.none) return `
+  <div class="overlay-screen dim">
+    <div class="elim-card">
+      <div class="elim-av"><div class="av xl" style="--c:#555">🤷</div></div>
+      <h2 class="ov-title">Personne n'a voté</h2>
+      <p class="ov-sub">Aucun joueur n'est éliminé cette manche.</p>
+      ${R.isHost() ? `<button class="btn yellow xl" id="nextRound">Manche suivante ➜</button>` : `<div class="waiting">L'hôte lance la manche suivante <span class="dots"><i></i><i></i><i></i></span></div>`}
+    </div>
+  </div>`;
   const p = R.p(e.uid);
   const role = ROLE[e.role] || ROLE.civil;
   const isMe = e.uid === me();

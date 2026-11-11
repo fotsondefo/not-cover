@@ -44,7 +44,8 @@ Sur mobile : Chrome > « Installer l'application » / Safari > Partager > « Sur
 
 - Civils : même mot. Undercover : mot proche (et il ne sait pas qu'il est l'intrus). Mr. White : pas de mot.
 - Chacun son tour donne un indice (timer réglable 30/45/60/90 s ou ∞, le tour passe automatiquement).
-- Vote en direct (votes visibles, modifiables jusqu'au dernier votant). Égalité : tirage au sort.
+- Temps de parole après les indices (30 s à 3 min, choisi par l'hôte, impossible à passer).
+- Vote en direct avec chrono (15/30/45/60 s, l'hôte peut le clore plus tôt). Votes visibles, modifiables jusqu'au dernier votant. Égalité : tirage au sort. Aucun vote : personne n'est éliminé.
 - Mr. White éliminé : il tente de deviner le mot des civils pour gagner.
 - Victoire des civils si tous les imposteurs sont éliminés, des imposteurs s'il ne reste qu'un civil.
 - Points : Civil +2, Undercover +10, Mr. White +6, cumulés entre les parties de la room.

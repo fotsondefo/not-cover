@@ -262,6 +262,9 @@ small, .small { color: var(--muted); font-size: 0.85em; }
 .timer-fill.hurry { background: linear-gradient(90deg, var(--red), var(--pink)); animation: hurry .5s infinite alternate; }
 @keyframes hurry { to { filter: brightness(1.4); } }
 .vote-dock { text-align: center; padding: 12px; border-radius: var(--radius); background: rgba(255,90,90,.12); border: 2px solid rgba(255,90,90,.45); display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.vote-dock > .timer, .debate-dock > .timer { align-self: stretch; margin-top: 18px; }
+.vote-inner { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.debate-dock { text-align: center; padding: 12px; border-radius: var(--radius); background: rgba(77,195,255,.12); border: 2px solid rgba(77,195,255,.45); display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .vote-title { font-weight: 900; }
 .vote-sub { font-size: .85rem; color: var(--muted); }
 
