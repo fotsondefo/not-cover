@@ -1,12 +1,10 @@
-// Colle ici la config de ton projet Firebase
-// (Console Firebase > Paramètres du projet > Vos applications > Application Web).
-// Tant que apiKey contient "REPLACE", l'app tourne en mode local (multi-onglets, sans serveur).
-export const firebaseConfig = {
-  apiKey: "REPLACE_ME",
-  authDomain: "your-project.firebaseapp.com",
-  databaseURL: "https://your-project-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:0000000000000000",
+const firebaseConfig = {
+  apiKey: "AIzaSyCNeRE_yrUpg_MN_6n3KlphzX4WI6Ec5Jg",
+  authDomain: "not-cover.firebaseapp.com",
+  databaseURL: "https://not-cover-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "not-cover",
+  storageBucket: "not-cover.firebasestorage.app",
+  messagingSenderId: "476161052584",
+  appId: "1:476161052584:web:bab62b08680cefdb4e979d",
+  measurementId: "G-0PNQWQWVD7"
 };
