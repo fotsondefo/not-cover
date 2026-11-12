@@ -20,6 +20,8 @@
 //               "guess" → il tente de deviner le mot des civils (phase dédiée)
 //               "win"   → il gagne seul (sauf si éliminé sur égalité tirée au sort)
 //  firstSpeaker : false s'il ne doit jamais parler en premier
+//  mask     : true si le joueur ne voit son mot que lettre par lettre
+//             (1 lettre à la manche 1, une de plus à chaque manche)
 //  hint     : phrase affichée sur sa carte
 export const ROLES = {
   civil: {
@@ -37,6 +39,12 @@ export const ROLES = {
     team: "impostor", word: null, reveal: true, points: 6,
     onElim: "guess", firstSpeaker: false,
     hint: "Tu n'as pas de mot. Écoute les autres et bluffe !",
+  },
+  borgne: {
+    label: "Borgne", icon: "🧐", cls: "borgne", article: "le ",
+    team: "civil", word: "civil", reveal: true, points: 4,
+    mask: true, firstSpeaker: false,
+    hint: "Tu es civil, mais tu ne vois qu'une lettre du mot… et une de plus à chaque manche.",
   },
   clown: {
     label: "Clown", icon: "🤡", cls: "clown", article: "le ",
@@ -57,10 +65,11 @@ export const WIN_SCREENS = {
 // Rôles optionnels activables par l'hôte (interrupteur dans le salon)
 export const SETTINGS_ROLES = [
   { key: "mrwhite", setting: "mrwhite", sub: "joueur sans mot" },
+  { key: "borgne", setting: "borgne", sub: "civil qui voit une lettre de plus par manche" },
   { key: "clown", setting: "clown", sub: "gagne s'il se fait éliminer" },
 ];
 
-export const DEFAULT_SETTINGS = { undercover: 1, mrwhite: false, clown: false, clueTime: 45 };
+export const DEFAULT_SETTINGS = { undercover: 1, mrwhite: false, borgne: false, clown: false, clueTime: 45 };
 
 export const maxImpostors = (n) => Math.max(1, Math.floor((n - 1) / 2));
 
@@ -81,11 +90,24 @@ export function composition(n, settings) {
     const r = ROLES[key];
     const nextImp = imp + (r.team === "impostor" ? 1 : 0);
     const civLeft = n - used - 1;
-    const ok = r.team === "impostor"
-      ? nextImp <= max
+    const ok =
+      r.team === "impostor" ? nextImp <= max
+      : r.team === "civil" ? civLeft >= 1 // il reste au moins un civil "normal"
       : civLeft >= 2 && civLeft > nextImp; // un neutre ne doit pas déséquilibrer la partie
     if (ok) { counts[key] = 1; used++; imp = nextImp; } else blocked.push(key);
   }
   counts.civil = Math.max(0, n - used);
   return { counts, blocked, max };
+}
+
+/** Positions des lettres d'un mot (espaces, tirets et apostrophes restent visibles). */
+export const letterIndexes = (word) => [...word].map((c, i) => (/[\p{L}\p{N}]/u.test(c) ? i : -1)).filter((i) => i >= 0);
+
+/**
+ * Mot partiellement visible : les `count` premières positions de `order` sont révélées.
+ * ex. maskWord("Chocolat", [3, 0, 7], 2) → "C _ _ c _ _ _ _"
+ */
+export function maskWord(word, order, count) {
+  const shown = new Set(order.slice(0, count));
+  return [...word].map((c, i) => (/[\p{L}\p{N}]/u.test(c) && !shown.has(i) ? "_" : c)).join(" ");
 }

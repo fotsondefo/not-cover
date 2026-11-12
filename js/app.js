@@ -1,6 +1,6 @@
 import { initStore, store } from "./store.js";
 import { WORD_PAIRS } from "./words.js";
-import { ROLES, WIN_SCREENS, SETTINGS_ROLES, DEFAULT_SETTINGS, composition } from "./roles.js";
+import { ROLES, WIN_SCREENS, SETTINGS_ROLES, DEFAULT_SETTINGS, composition, letterIndexes, maskWord } from "./roles.js";
 
 /* ============================================================
    Constantes
@@ -181,7 +181,12 @@ async function enterRoom(code) {
     S.room = val;
     onRoomChange(prevStatus);
   }));
-  S.unsubs.push(store.onValue(`secrets/${code}/${me()}`, (v) => { S.secret = v; render(); }));
+  S.unsubs.push(store.onValue(`secrets/${code}/${me()}`, (v) => {
+    const prev = S.secret;
+    S.secret = v;
+    if (v?.masked && prev?.masked && prev.word !== v.word) { toast("🧐 Nouvelle lettre révélée !"); sfx.send(); }
+    render();
+  }));
   S.unsubs.push(store.onValue(`emotes/${code}`, (v) => onEmotes(v || {}, joinTime), { limitLast: 25 }));
   render();
 }
@@ -340,10 +345,18 @@ async function startGame() {
   }
   for (; i < ids.length; i++) roles[ids[i]] = "civil";
 
-  const secrets = { _roles: roles, _words: words };
+  const secrets = { _roles: roles, _words: words, _masks: {} };
   for (const id of ids) {
     const r = ROLES[roles[id]];
-    secrets[id] = { word: r.word ? words[r.word] : null, role: r.reveal ? roles[id] : null };
+    const word = r.word ? words[r.word] : null;
+    if (word && r.mask) {
+      // Ordre de révélation des lettres tiré au sort, gardé côté hôte
+      const order = shuffle(letterIndexes(word));
+      secrets._masks[id] = order;
+      secrets[id] = { word: maskWord(word, order, 1), masked: true, role: r.reveal ? roles[id] : null };
+    } else {
+      secrets[id] = { word, role: r.reveal ? roles[id] : null };
+    }
   }
   await store.set(`secrets/${S.code}`, secrets);
 
@@ -371,6 +384,15 @@ async function startClues(newRound) {
   if (!canStart(order[0]) && order.length > 1) {
     const j = order.findIndex(canStart);
     if (j > 0) [order[0], order[j]] = [order[j], order[0]];
+  }
+  // Rôles masqués (Borgne) : une lettre de plus à chaque nouvelle manche
+  if (newRound && S.hostSecrets?._masks) {
+    const up = {};
+    for (const [id, letters] of Object.entries(S.hostSecrets._masks)) {
+      const word = S.hostSecrets._words?.[ROLES[roles[id]]?.word];
+      if (word) up[`${id}/word`] = maskWord(word, letters, newRound);
+    }
+    if (Object.keys(up).length) await store.update(`secrets/${S.code}`, up);
   }
   const t = R.settings().clueTime;
   const now = store.now();
@@ -509,7 +531,7 @@ async function submitClue() {
   const text = (input?.value || "").trim().replace(/\s+/g, " ").slice(0, 32);
   if (!text) return;
   if (R.current() !== me() || R.status() !== "clue") return;
-  if (S.secret?.word && norm(text).includes(norm(S.secret.word))) {
+  if (S.secret?.word && !S.secret.masked && norm(text).includes(norm(S.secret.word))) {
     input.classList.add("shake"); setTimeout(() => input.classList.remove("shake"), 500);
     return toast("Tu ne peux pas donner ton propre mot 🙃", "warn");
   }
@@ -685,6 +707,7 @@ function rulesModal() {
         <li>Chacun son tour, donne <b>un indice</b> sur ton mot, sans le dire.</li>
         <li>Puis tout le monde <b>vote</b> pour éliminer un suspect.</li>
         <li>Mr. White éliminé ? Il peut gagner en devinant le mot des civils.</li>
+        <li><b>🧐 Borgne</b> (optionnel) : un civil qui ne voit qu'une lettre du mot, et une de plus à chaque manche.</li>
         <li><b>🤡 Clown</b> (optionnel) : il a le mot des civils mais gagne seul s'il se fait éliminer au vote.</li>
       </ol>
       <div class="win-rules">
@@ -879,7 +902,7 @@ function renderGame() {
 
   // Barre du haut
   const myRole = S.secret?.role && ROLES[S.secret.role];
-  const myWord = !S.secret ? "…" : [myRole ? `${myRole.icon} ${myRole.label}` : "", S.secret.word || ""].filter(Boolean).join(" · ");
+  const myWord = !S.secret ? "…" : [myRole?.icon, S.secret.word || myRole?.label].filter(Boolean).join(" ");
   $("#tb").innerHTML = topbar(`
     ${S.showWord ? "" : `<span class="pill round">Manche ${g.round || 1}</span>`}
     ${spectator ? `<span class="pill spec">👀 Spectateur</span>` :
@@ -1079,7 +1102,7 @@ function revealOverlay() {
         <div class="face back ${r ? r.cls : ""}">
           ${!sec ? `<div class="loader"></div>` : `
             ${r ? `<div class="fc-emo">${r.icon}</div><div class="fc-role">${esc(r.label)}</div>` : ""}
-            ${sec.word ? `<div class="fc-label">Ton mot</div><div class="fc-word">${esc(sec.word)}</div>` : `<div class="fc-word">Aucun mot</div>`}
+            ${sec.word ? `<div class="fc-label">${sec.masked ? "Ce que tu vois du mot" : "Ton mot"}</div><div class="fc-word ${sec.masked ? "masked" : ""}">${esc(sec.word)}</div>` : `<div class="fc-word">Aucun mot</div>`}
             <div class="fc-hint">${esc((r || ROLES.civil).hint)}</div>`}
         </div>
       </button>

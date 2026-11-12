@@ -365,3 +365,11 @@ small, .small { color: var(--muted); font-size: 0.85em; }
 .set-row.blocked .set-name { opacity: .5; }
 .set-row.blocked .set-sub { color: var(--yellow); }
 .over.clown .win-title { color: var(--clown); text-shadow: 0 4px 0 #8a4f00; }
+:root { --borgne: #7dd3fc; }
+.tag.borgne { background: rgba(125,211,252,.18); color: var(--borgne); }
+.role-reveal.borgne { background: rgba(125,211,252,.2); color: var(--borgne); border: 2px solid var(--borgne); }
+.dead-badge.borgne { background: var(--borgne); }
+.fl-role.borgne { color: var(--borgne); }
+.flip-card .back.borgne { background: linear-gradient(160deg, #eefaff, var(--borgne)); box-shadow: 0 10px 0 #2b8db8, 0 20px 40px rgba(0,0,0,.4); }
+.fc-word.masked { font-size: 1.7rem; letter-spacing: 1px; white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere; }
+.word-chip.on { white-space: pre; }
