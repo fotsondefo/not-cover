@@ -1,8 +1,8 @@
 // Service worker Not Cover : shell en cache, réseau d'abord pour le code (mises à jour rapides)
-const VERSION = "notcover-v2";
+const VERSION = "notcover-v3";
 const SHELL = [
   "./", "./index.html", "./css/style.css",
-  "./js/app.js", "./js/store.js", "./js/words.js", "./js/firebase-config.js", "./js/local-db-worker.js",
+  "./js/app.js", "./js/store.js", "./js/words.js", "./js/firebase-config.js", "./js/local-db-worker.js", "./js/roles.js",
   "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
 ];
 

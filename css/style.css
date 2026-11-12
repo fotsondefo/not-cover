@@ -262,9 +262,6 @@ small, .small { color: var(--muted); font-size: 0.85em; }
 .timer-fill.hurry { background: linear-gradient(90deg, var(--red), var(--pink)); animation: hurry .5s infinite alternate; }
 @keyframes hurry { to { filter: brightness(1.4); } }
 .vote-dock { text-align: center; padding: 12px; border-radius: var(--radius); background: rgba(255,90,90,.12); border: 2px solid rgba(255,90,90,.45); display: flex; flex-direction: column; gap: 6px; align-items: center; }
-.vote-dock > .timer, .debate-dock > .timer { align-self: stretch; margin-top: 18px; }
-.vote-inner { display: flex; flex-direction: column; gap: 6px; align-items: center; }
-.debate-dock { text-align: center; padding: 12px; border-radius: var(--radius); background: rgba(77,195,255,.12); border: 2px solid rgba(77,195,255,.45); display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .vote-title { font-weight: 900; }
 .vote-sub { font-size: .85rem; color: var(--muted); }
 
@@ -355,3 +352,16 @@ small, .small { color: var(--muted); font-size: 0.85em; }
 
 @media (min-height: 760px) { .av { width: 58px; height: 58px; font-size: 32px; } .av.sm { width: 40px; height: 40px; font-size: 22px; } .av.xl { width: 120px; height: 120px; font-size: 68px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+
+/* ---------- Rôles additionnels ---------- */
+:root { --clown: #ff9f1c; }
+.tag.clown { background: rgba(255,159,28,.18); color: var(--clown); }
+.role-reveal.clown { background: rgba(255,159,28,.2); color: var(--clown); border: 2px solid var(--clown); }
+.dead-badge.clown { background: var(--clown); }
+.fl-role.clown { color: var(--clown); }
+.flip-card .back.clown { background: linear-gradient(160deg, #fff0d9, var(--clown)); box-shadow: 0 10px 0 #b36a00, 0 20px 40px rgba(0,0,0,.4); }
+.fc-role { font-family: var(--display); font-size: 1.5rem; margin-top: -6px; }
+.flip-card .back .fc-emo { font-size: 56px; }
+.set-row.blocked .set-name { opacity: .5; }
+.set-row.blocked .set-sub { color: var(--yellow); }
+.over.clown .win-title { color: var(--clown); text-shadow: 0 4px 0 #8a4f00; }

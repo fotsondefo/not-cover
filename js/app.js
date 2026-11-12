@@ -1,5 +1,6 @@
 import { initStore, store } from "./store.js";
 import { WORD_PAIRS } from "./words.js";
+import { ROLES, WIN_SCREENS, SETTINGS_ROLES, DEFAULT_SETTINGS, composition } from "./roles.js";
 
 /* ============================================================
    Constantes
@@ -7,16 +8,7 @@ import { WORD_PAIRS } from "./words.js";
 const AVATARS = ["🦊","🐼","🐸","🐙","🦄","🐯","🐵","🐧","🦁","🐻","🐨","🐷","🦖","👽","🤖","👻","🎃","🐲","🦉","🐝","🦩","🐳","🦔","🍄"];
 const COLORS = ["#ff4d8d","#ffb020","#2ee6a8","#4dc3ff","#a66bff","#ff6b4d","#c6ff3d","#ff8ad8","#5ef0ff","#ffd23f"];
 const EMOTES = ["😂","🤔","😱","🤨","👀","🔥","👍","😈","🤫","❤️"];
-const ROLE = {
-  civil: { label: "Civil", icon: "🙂", cls: "civil" },
-  undercover: { label: "Undercover", icon: "🕵️", cls: "under" },
-  mrwhite: { label: "Mr. White", icon: "👻", cls: "white" },
-};
-const POINTS = { civil: 2, undercover: 10, mrwhite: 6 };
 const CLUE_TIMES = [30, 45, 60, 90, 0];
-const DEBATE_TIMES = [30, 60, 90, 120, 180]; // temps de parole avant le vote (non passable)
-const VOTE_TIMES = [15, 30, 45, 60];         // temps de vote (l'hôte peut le clore)
-const DEFAULT_SETTINGS = { undercover: 1, mrwhite: false, clueTime: 45, debateTime: 60, voteTime: 30 };
 const MAX_PLAYERS = 16;
 const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
@@ -29,7 +21,6 @@ const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toL
 const shuffle = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const genCode = () => Array.from({ length: 4 }, () => pick(CODE_CHARS)).join("");
-const maxImpostors = (n) => Math.max(1, Math.floor((n - 1) / 2));
 
 function loadProfile() {
   try {
@@ -46,7 +37,7 @@ const saveProfile = () => localStorage.setItem("nc_profile", JSON.stringify(S.pr
 const S = {
   code: null,
   room: null,
-  secret: null,       // { word } ou { mrwhite: true }
+  secret: null,       // { word, role } — role seulement si ROLES[role].reveal
   hostSecrets: null,  // (hôte uniquement) { _roles, _words }
   unsubs: [],
   profile: loadProfile(),
@@ -260,9 +251,8 @@ function onRoomChange(prevStatus) {
     S.showWord = false;
     S.myVoteDraft = null;
     if (status === "reveal") S.revealFlipped = false;
-    if (status === "debate") sfx.turn();
     if (status === "vote") sfx.vote();
-    if (status === "elim" || status === "mrwhite") sfx.elim();
+    if (status === "elim" || status === "guess") sfx.elim();
     if (status === "over") { sfx.win(); setTimeout(confetti, 200); }
   }
   const turnKey = status === "clue" ? `${R.game().round}-${R.game().turn}` : null;
@@ -314,7 +304,7 @@ function hostTick() {
     const voters = R.alive().filter((p) => p.online);
     if (voters.length && voters.every((p) => votes[p.id])) once(`resolve-${g.round}`, () => setTimeout(resolveVote, 900));
   }
-  if (st === "mrwhite" && g.mwGuess != null && S.hostSecrets) once(`mw-${g.round}`, resolveMrWhite);
+  if (st === "guess" && g.mwGuess != null && S.hostSecrets) once(`mw-${g.round}`, resolveGuess);
 }
 
 // Timer de l'hôte : saute les tours expirés / joueurs déconnectés
@@ -329,48 +319,37 @@ setInterval(() => {
   if (expired || ghost) once(`skip-${g.round}-${g.turn}`, () => advanceTurn(null, true));
 }, 1000);
 
-// Timer de l'hôte : fin du temps de parole -> vote, fin du temps de vote -> dépouillement
-setInterval(() => {
-  if (!S.room || !R.isHost()) return;
-  const st = R.status(), g = R.game(), now = store.now();
-  if (st === "debate" && g.debateEndsAt && now > g.debateEndsAt + 300) once(`vote-${g.round}`, startVote);
-  if (st === "vote" && g.voteEndsAt && now > g.voteEndsAt + 300) once(`resolve-${g.round}`, resolveVote);
-}, 500);
-
-async function startVote() {
-  if (R.status() !== "debate") return;
-  const now = store.now();
-  await store.update(roomPath(), {
-    "meta/status": "vote",
-    "game/voteStartedAt": now,
-    "game/voteEndsAt": now + R.settings().voteTime * 1000,
-  });
-}
-
 async function startGame() {
   const players = R.list().filter((p) => p.online);
   const n = players.length;
   if (n < 3) return toast("Il faut au moins 3 joueurs", "warn");
-  const set = R.settings();
-  const max = maxImpostors(n);
-  const und = Math.min(Math.max(1, set.undercover || 1), max);
-  const mw = set.mrwhite && und + 1 <= max ? 1 : 0;
+  const { counts } = composition(n, R.settings());
 
   const pairIndex = Math.floor(Math.random() * WORD_PAIRS.length);
   let [civilWord, underWord] = WORD_PAIRS[pairIndex];
   if (Math.random() < 0.5) [civilWord, underWord] = [underWord, civilWord];
+  const words = { civil: civilWord, undercover: underWord };
 
+  // Distribution : rôles spéciaux d'abord, le reste en civils
   const ids = shuffle(players.map((p) => p.id));
   const roles = {};
-  ids.forEach((id, i) => { roles[id] = i < und ? "undercover" : i < und + mw ? "mrwhite" : "civil"; });
+  let i = 0;
+  for (const [role, c] of Object.entries(counts)) {
+    if (role === "civil") continue;
+    for (let k = 0; k < c; k++) roles[ids[i++]] = role;
+  }
+  for (; i < ids.length; i++) roles[ids[i]] = "civil";
 
-  const secrets = { _roles: roles, _words: { civil: civilWord, undercover: underWord } };
-  for (const id of ids) secrets[id] = roles[id] === "mrwhite" ? { mrwhite: true } : { word: roles[id] === "civil" ? civilWord : underWord };
+  const secrets = { _roles: roles, _words: words };
+  for (const id of ids) {
+    const r = ROLES[roles[id]];
+    secrets[id] = { word: r.word ? words[r.word] : null, role: r.reveal ? roles[id] : null };
+  }
   await store.set(`secrets/${S.code}`, secrets);
 
   const up = {
     "meta/status": "reveal",
-    game: { round: 1, startedAt: store.now(), composition: { civil: n - und - mw, undercover: und, mrwhite: mw } },
+    game: { round: 1, startedAt: store.now(), composition: counts },
     clues: null, votes: null, reveal: null,
   };
   for (const p of R.list()) {
@@ -387,9 +366,10 @@ async function startGame() {
 async function startClues(newRound) {
   const roles = S.hostSecrets?._roles || {};
   let order = shuffle(R.alive().map((p) => p.id));
-  // Mr. White ne commence jamais
-  if (roles[order[0]] === "mrwhite" && order.length > 1) {
-    const j = order.findIndex((id) => roles[id] !== "mrwhite");
+  // Certains rôles (Mr. White) ne parlent jamais en premier
+  const canStart = (id) => ROLES[roles[id]]?.firstSpeaker !== false;
+  if (!canStart(order[0]) && order.length > 1) {
+    const j = order.findIndex(canStart);
     if (j > 0) [order[0], order[j]] = [order[j], order[0]];
   }
   const t = R.settings().clueTime;
@@ -421,14 +401,7 @@ async function advanceTurn(text, skipped = false) {
     "game/turnEndsAt": t ? now + t * 1000 : null,
     [`players/${who}/typing`]: null,
   };
-  if (next >= g.order.length) {
-    // Tous les indices sont donnés : temps de parole obligatoire avant le vote
-    up["meta/status"] = "debate";
-    up["game/turnEndsAt"] = null;
-    up["game/debateStartedAt"] = now;
-    up["game/debateEndsAt"] = now + R.settings().debateTime * 1000;
-    up["game/voteEndsAt"] = null;
-  }
+  if (next >= g.order.length) up["meta/status"] = "vote";
   await store.update(roomPath(), up);
 }
 
@@ -441,10 +414,7 @@ async function resolveVote() {
     if (aliveIds.has(voter) && aliveIds.has(target)) tally[target] = (tally[target] || 0) + 1;
   }
   const entries = Object.entries(tally);
-  if (!entries.length) {
-    // Temps écoulé (ou vote clos) sans aucun vote : personne n'est éliminé
-    return store.update(roomPath(), { "meta/status": "elim", "game/elim": { none: true }, "game/mwGuess": null, "game/mwFail": null });
-  }
+  if (!entries.length) { S.hostDone.delete(`resolve-${R.game().round}`); return toast("Personne n'a voté", "warn"); }
   const top = Math.max(...entries.map(([, c]) => c));
   const tied = entries.filter(([, c]) => c === top).map(([id]) => id);
   const target = pick(tied);
@@ -454,6 +424,7 @@ async function resolveVote() {
 async function eliminate(target, tie, tally) {
   const roles = S.hostSecrets?._roles || {};
   const role = roles[target] || "civil";
+  const def = ROLES[role];
   const up = {
     [`players/${target}/alive`]: false,
     [`players/${target}/typing`]: null,
@@ -462,8 +433,9 @@ async function eliminate(target, tie, tally) {
     "game/mwGuess": null,
     "game/mwFail": null,
   };
-  if (role === "mrwhite") {
-    up["meta/status"] = "mrwhite";
+  if (def.onElim === "win" && !tie) return finish(role, up);
+  if (def.onElim === "guess") {
+    up["meta/status"] = "guess";
     return store.update(roomPath(), up);
   }
   const winner = computeWinner(roles, target);
@@ -473,19 +445,19 @@ async function eliminate(target, tie, tally) {
 }
 
 function computeWinner(roles, justDead) {
-  const alive = R.alive().filter((p) => p.id !== justDead).map((p) => roles[p.id]);
-  const imp = alive.filter((r) => r !== "civil").length;
-  const civ = alive.filter((r) => r === "civil").length;
+  const teams = R.alive().filter((p) => p.id !== justDead).map((p) => ROLES[roles[p.id]]?.team);
+  const imp = teams.filter((t) => t === "impostor").length;
+  const civ = teams.filter((t) => t === "civil").length;
   if (imp === 0) return "civil";
   if (civ <= 1) return "impostors";
   return null;
 }
 
-async function resolveMrWhite() {
+async function resolveGuess() {
   const g = R.game();
   const words = S.hostSecrets?._words || {};
   const ok = norm(g.mwGuess) && norm(g.mwGuess) === norm(words.civil);
-  if (ok) return finish("mrwhite", {});
+  if (ok) return finish(g.elim?.role || "mrwhite", {});
   const roles = S.hostSecrets._roles;
   const winner = computeWinner(roles, g.elim?.uid);
   const up = { "game/mwFail": true };
@@ -497,13 +469,15 @@ async function resolveMrWhite() {
 async function finish(winner, up = {}) {
   const roles = S.hostSecrets?._roles || {};
   const words = S.hostSecrets?._words || {};
-  const winners = Object.keys(roles).filter((id) =>
-    winner === "civil" ? roles[id] === "civil" :
-    winner === "mrwhite" ? roles[id] === "mrwhite" :
-    roles[id] !== "civil");
+  // winner = "civil" | "impostors" (équipes) ou un rôle qui gagne seul ("mrwhite", "clown"…)
+  const winners = Object.keys(roles).filter((id) => {
+    if (winner === "civil") return ROLES[roles[id]].team === "civil";
+    if (winner === "impostors") return ROLES[roles[id]].team === "impostor";
+    return roles[id] === winner;
+  });
   for (const id of winners) {
     const p = R.p(id);
-    if (p) up[`players/${id}/score`] = (p.score || 0) + POINTS[roles[id]];
+    if (p) up[`players/${id}/score`] = (p.score || 0) + ROLES[roles[id]].points;
   }
   up.reveal = { winner, winners, roles, words };
   up["meta/status"] = "over";
@@ -709,15 +683,15 @@ function rulesModal() {
         <li><b>🕵️ Undercover</b> : un mot proche mais différent… et il ne sait pas qu'il est l'intrus !</li>
         <li><b>👻 Mr. White</b> : aucun mot. Il bluffe et improvise.</li>
         <li>Chacun son tour, donne <b>un indice</b> sur ton mot, sans le dire.</li>
-        <li>Ensuite, <b>temps de parole</b> : débattez à voix haute (impossible de le passer).</li>
-        <li>Puis tout le monde <b>vote</b> pour éliminer un suspect, avant la fin du chrono.</li>
+        <li>Puis tout le monde <b>vote</b> pour éliminer un suspect.</li>
         <li>Mr. White éliminé ? Il peut gagner en devinant le mot des civils.</li>
+        <li><b>🤡 Clown</b> (optionnel) : il a le mot des civils mais gagne seul s'il se fait éliminer au vote.</li>
       </ol>
       <div class="win-rules">
         <div><b>Civils</b> gagnent s'ils éliminent tous les imposteurs.</div>
         <div><b>Imposteurs</b> gagnent s'il ne reste qu'un civil.</div>
       </div>
-      <div class="pts">Points : Civil +${POINTS.civil} · Undercover +${POINTS.undercover} · Mr. White +${POINTS.mrwhite}</div>
+      <div class="pts">Points : ${Object.values(ROLES).map((r) => `${r.label} +${r.points}`).join(" · ")}</div>
       <button class="btn yellow" id="rulesClose">Compris !</button>
     </div>
   </div>`;
@@ -735,10 +709,9 @@ function renderLobby() {
   const host = R.isHost();
   const set = R.settings();
   const n = online.length;
-  const max = maxImpostors(Math.max(n, 3));
-  const und = Math.min(set.undercover || 1, max);
-  const mw = set.mrwhite && und + 1 <= max ? 1 : 0;
-  const civ = Math.max(0, n - und - mw);
+  const { counts, blocked, max } = composition(n, set);
+  const und = counts.undercover;
+  const imp = Object.entries(counts).filter(([r, c]) => c && ROLES[r].team === "impostor").reduce((a, [, c]) => a + c, 0);
 
   app.dataset.screen = "lobby";
   app.innerHTML = `
@@ -774,36 +747,24 @@ function renderLobby() {
         <div class="stepper">
           <button data-und="-1" ${und <= 1 ? "disabled" : ""}>−</button>
           <span>${und}</span>
-          <button data-und="1" ${und + mw >= max ? "disabled" : ""}>+</button>
+          <button data-und="1" ${imp >= max ? "disabled" : ""}>+</button>
         </div>
       </div>
-      <div class="set-row">
-        <div><div class="set-name">👻 Mr. White</div><div class="set-sub">joueur sans mot</div></div>
-        <button class="toggle ${set.mrwhite ? "on" : ""}" id="mwToggle" aria-pressed="${!!set.mrwhite}"><span></span></button>
-      </div>
+      ${SETTINGS_ROLES.map(({ key, setting, sub }) => {
+        const on = !!set[setting], off = blocked.includes(key);
+        return `
+      <div class="set-row ${off ? "blocked" : ""}">
+        <div><div class="set-name">${ROLES[key].icon} ${ROLES[key].label}</div><div class="set-sub">${off ? "pas assez de joueurs, ignoré" : sub}</div></div>
+        <button class="toggle ${on ? "on" : ""}" data-role-toggle="${setting}" aria-pressed="${on}"><span></span></button>
+      </div>`;
+      }).join("")}
       <div class="set-row col">
         <div class="set-name">⏱️ Temps par indice</div>
         <div class="chips">
           ${CLUE_TIMES.map((t) => `<button class="chip ${set.clueTime === t ? "on" : ""}" data-time="${t}">${t ? t + "s" : "∞"}</button>`).join("")}
         </div>
       </div>
-      <div class="set-row col">
-        <div><div class="set-name">🗣️ Temps de parole</div><div class="set-sub">débat avant le vote, impossible à passer</div></div>
-        <div class="chips">
-          ${DEBATE_TIMES.map((t) => `<button class="chip ${set.debateTime === t ? "on" : ""}" data-debate="${t}">${t < 60 ? t + "s" : Math.floor(t / 60) + " min" + (t % 60 ? " " + (t % 60) : "")}</button>`).join("")}
-        </div>
-      </div>
-      <div class="set-row col">
-        <div><div class="set-name">🗳️ Temps de vote</div><div class="set-sub">l'hôte peut clore le vote plus tôt</div></div>
-        <div class="chips">
-          ${VOTE_TIMES.map((t) => `<button class="chip ${set.voteTime === t ? "on" : ""}" data-votetime="${t}">${t}s</button>`).join("")}
-        </div>
-      </div>
-      <div class="compo">
-        <span class="tag civil">🙂 ${civ} civil${civ > 1 ? "s" : ""}</span>
-        <span class="tag under">🕵️ ${und}</span>
-        ${mw ? `<span class="tag white">👻 1</span>` : ""}
-      </div>
+      <div class="compo">${compoTags(counts, true)}</div>
     </div>
 
     <div class="dock-spacer"></div>
@@ -825,16 +786,21 @@ function renderLobby() {
   app.querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => kick(b.dataset.kick)));
   if (host) {
     app.querySelectorAll("[data-und]").forEach((b) => (b.onclick = () => updateSettings({ undercover: Math.max(1, und + +b.dataset.und) })));
-    $("#mwToggle").onclick = () => {
-      if (!set.mrwhite && und + 1 > max) return toast(`Pas assez de joueurs pour un Mr. White en plus`, "warn");
-      updateSettings({ mrwhite: !set.mrwhite });
-    };
+    app.querySelectorAll("[data-role-toggle]").forEach((b) => (b.onclick = () => {
+      const k = b.dataset.roleToggle;
+      updateSettings({ [k]: !set[k] });
+    }));
     app.querySelectorAll("[data-time]").forEach((b) => (b.onclick = () => updateSettings({ clueTime: +b.dataset.time })));
-    app.querySelectorAll("[data-debate]").forEach((b) => (b.onclick = () => updateSettings({ debateTime: +b.dataset.debate })));
-    app.querySelectorAll("[data-votetime]").forEach((b) => (b.onclick = () => updateSettings({ voteTime: +b.dataset.votetime })));
     $("#start").onclick = withBusy($("#start"), startGame);
   }
   bindEmotes();
+}
+
+function compoTags(counts, long = false) {
+  return Object.entries(ROLES)
+    .filter(([key]) => counts[key])
+    .map(([key, r]) => `<span class="tag ${r.cls}">${r.icon} ${counts[key]}${long && key === "civil" ? ` civil${counts[key] > 1 ? "s" : ""}` : ""}</span>`)
+    .join("");
 }
 
 function topbar(center) {
@@ -912,7 +878,8 @@ function renderGame() {
   }
 
   // Barre du haut
-  const myWord = S.secret?.mrwhite ? "Tu es Mr. White 👻" : S.secret?.word || "…";
+  const myRole = S.secret?.role && ROLES[S.secret.role];
+  const myWord = !S.secret ? "…" : [myRole ? `${myRole.icon} ${myRole.label}` : "", S.secret.word || ""].filter(Boolean).join(" · ");
   $("#tb").innerHTML = topbar(`
     ${S.showWord ? "" : `<span class="pill round">Manche ${g.round || 1}</span>`}
     ${spectator ? `<span class="pill spec">👀 Spectateur</span>` :
@@ -949,7 +916,7 @@ function renderPlayers() {
       data-pid="${p.id}" ${st === "vote" && !dead ? `data-vote="${p.id}"` : ""}>
       <div class="av-wrap">
         ${avatarHTML(p)}
-        ${dead ? `<span class="dead-badge ${ROLE[role]?.cls || ""}">${ROLE[role]?.icon || "💀"}</span>` : ""}
+        ${dead ? `<span class="dead-badge ${ROLES[role]?.cls || ""}">${ROLES[role]?.icon || "💀"}</span>` : ""}
         ${p.typing && turn ? `<span class="typing-badge"><i></i><i></i><i></i></span>` : ""}
         ${counts[p.id] ? `<span class="vote-count">${counts[p.id]}</span>` : ""}
         ${st === "vote" && votes[p.id] ? `<span class="has-voted">✓</span>` : ""}
@@ -1040,18 +1007,8 @@ function renderDock() {
         </div>
         <div class="timer"><div class="timer-fill" id="timerFill"></div></div>`;
       $("#skip") && ($("#skip").onclick = () => { if (confirm(`Passer le tour de ${cur?.name} ?`)) advanceTurn(null, true); });
-    } else if (st === "debate") {
-      dock.innerHTML = `
-        <div class="debate-dock">
-          <div class="vote-title">🗣️ Temps de parole</div>
-          <div class="vote-sub">Débattez à voix haute : qui est l'intrus ? Le vote s'ouvre à la fin du chrono.</div>
-          <div class="timer"><div class="timer-fill" id="timerFill"></div></div>
-        </div>`;
     } else if (st === "vote") {
-      dock.innerHTML = `
-        <div class="vote-dock"><div class="vote-inner" id="voteDock"></div>
-          <div class="timer"><div class="timer-fill" id="timerFill"></div></div>
-        </div>`;
+      dock.innerHTML = `<div class="vote-dock" id="voteDock"></div>`;
     } else {
       dock.innerHTML = "";
     }
@@ -1063,27 +1020,19 @@ function renderDock() {
     if (vd) vd.innerHTML = `
       <div class="vote-title">${amAlive ? (votes[me()] ? `Tu votes contre <b>${esc(R.p(votes[me()])?.name)}</b> — touche un autre joueur pour changer` : "🗳️ Touche un joueur pour l'accuser") : "👻 Les vivants votent…"}</div>
       <div class="vote-sub">${pending.length ? `En attente : ${pending.map((p) => esc(p.avatar)).join(" ")}` : "Dépouillement…"}</div>
-      ${R.isHost() && pending.length ? `<button class="btn ghost sm" id="forceVote">Clore le vote ⏭</button>` : ""}`;
-    $("#forceVote") && ($("#forceVote").onclick = () => {
-      if (!confirm("Clore le vote maintenant ?")) return;
-      once(`resolve-${R.game().round}`, resolveVote);
-    });
+      ${R.isHost() && pending.length ? `<button class="btn ghost sm" id="forceVote">Clore le vote</button>` : ""}`;
+    $("#forceVote") && ($("#forceVote").onclick = () => { S.hostDone.add(`resolve-${R.game().round}`); resolveVote(); });
   }
 }
 
-// Animation de la barre de temps (indice, temps de parole, vote)
+// Animation de la barre de temps
 (function tickTimer() {
   const fill = document.getElementById("timerFill");
-  const st = S.room && R.status();
-  if (fill && (st === "clue" || st === "debate" || st === "vote")) {
-    const g = R.game(), set = R.settings();
-    const [endsAt, secs] =
-      st === "clue" ? [g.turnEndsAt, set.clueTime] :
-      st === "debate" ? [g.debateEndsAt, set.debateTime] :
-      [g.voteEndsAt, set.voteTime];
-    if (endsAt) {
-      const total = secs * 1000;
-      const left = Math.max(0, endsAt - store.now());
+  if (fill && S.room && R.status() === "clue") {
+    const g = R.game();
+    if (g.turnEndsAt) {
+      const total = R.settings().clueTime * 1000;
+      const left = Math.max(0, g.turnEndsAt - store.now());
       const pct = Math.max(0, Math.min(100, (left / total) * 100));
       fill.style.width = pct + "%";
       fill.classList.toggle("hurry", left < 10000);
@@ -1104,7 +1053,7 @@ function renderOverlay() {
   ov.dataset.key = key;
 
   if (st === "reveal") return (ov.innerHTML = revealOverlay(), bindReveal());
-  if (st === "elim" || st === "mrwhite") return (ov.innerHTML = elimOverlay(), bindElim());
+  if (st === "elim" || st === "guess") return (ov.innerHTML = elimOverlay(), bindElim());
   if (st === "over") return (ov.innerHTML = overOverlay(), bindOver());
   ov.innerHTML = "";
 }
@@ -1118,7 +1067,8 @@ function revealOverlay() {
   if (spectator) return `
     <div class="overlay-screen"><div class="reveal-wrap"><h2 class="ov-title">Distribution des mots…</h2>
     <p class="ov-sub">${ready}/${total} joueurs prêts</p></div></div>`;
-  const isWhite = S.secret?.mrwhite;
+  const sec = S.secret;
+  const r = sec?.role ? ROLES[sec.role] : null;
   return `
   <div class="overlay-screen">
     <div class="reveal-wrap">
@@ -1126,14 +1076,15 @@ function revealOverlay() {
       <p class="ov-sub">Cache ton écran 🤫</p>
       <button class="flip-card ${S.revealFlipped ? "flipped" : ""}" id="flip">
         <div class="face front"><div class="fc-emo">🕵️</div><div>Touche pour révéler</div></div>
-        <div class="face back ${isWhite ? "white" : ""}">
-          ${!S.secret ? `<div class="loader"></div>` : isWhite
-            ? `<div class="fc-emo">👻</div><div class="fc-word">Mr. White</div><div class="fc-hint">Tu n'as pas de mot. Écoute les autres et bluffe !</div>`
-            : `<div class="fc-label">Ton mot</div><div class="fc-word">${esc(S.secret.word)}</div><div class="fc-hint">Civil ou Undercover ? À toi de le découvrir…</div>`}
+        <div class="face back ${r ? r.cls : ""}">
+          ${!sec ? `<div class="loader"></div>` : `
+            ${r ? `<div class="fc-emo">${r.icon}</div><div class="fc-role">${esc(r.label)}</div>` : ""}
+            ${sec.word ? `<div class="fc-label">Ton mot</div><div class="fc-word">${esc(sec.word)}</div>` : `<div class="fc-word">Aucun mot</div>`}
+            <div class="fc-hint">${esc((r || ROLES.civil).hint)}</div>`}
         </div>
       </button>
       <div class="compo centered">
-        <span class="tag civil">🙂 ${c.civil ?? "?"}</span><span class="tag under">🕵️ ${c.undercover ?? "?"}</span>${c.mrwhite ? `<span class="tag white">👻 ${c.mrwhite}</span>` : ""}
+        ${compoTags(c)}
       </div>
       ${mePl?.ready
         ? `<div class="waiting">Prêts : ${ready}/${total} <span class="dots"><i></i><i></i><i></i></span></div>`
@@ -1151,26 +1102,17 @@ function bindReveal() {
 function elimOverlay() {
   const st = R.status(), g = R.game();
   const e = g.elim || {};
-  if (e.none) return `
-  <div class="overlay-screen dim">
-    <div class="elim-card">
-      <div class="elim-av"><div class="av xl" style="--c:#555">🤷</div></div>
-      <h2 class="ov-title">Personne n'a voté</h2>
-      <p class="ov-sub">Aucun joueur n'est éliminé cette manche.</p>
-      ${R.isHost() ? `<button class="btn yellow xl" id="nextRound">Manche suivante ➜</button>` : `<div class="waiting">L'hôte lance la manche suivante <span class="dots"><i></i><i></i><i></i></span></div>`}
-    </div>
-  </div>`;
   const p = R.p(e.uid);
-  const role = ROLE[e.role] || ROLE.civil;
+  const role = ROLES[e.role] || ROLES.civil;
   const isMe = e.uid === me();
   let extra = "";
-  if (st === "mrwhite") {
+  if (st === "guess") {
     if (isMe && g.mwGuess == null) extra = `
       <div class="mw-box">
         <div class="mw-title">Dernière chance ! Devine le mot des civils</div>
         <div class="composer"><input id="guess" class="field" maxlength="40" placeholder="Le mot est…" autocomplete="off" enterkeyhint="send"/><button class="btn pink send" id="guessBtn">➤</button></div>
       </div>`;
-    else extra = `<div class="mw-box"><div class="mw-title">${g.mwGuess != null ? `Mr. White propose « <b>${esc(g.mwGuess)}</b> »…` : "Mr. White tente de deviner le mot des civils…"}</div><span class="dots"><i></i><i></i><i></i></span>
+    else extra = `<div class="mw-box"><div class="mw-title">${g.mwGuess != null ? `${esc(role.label)} propose « <b>${esc(g.mwGuess)}</b> »…` : `${esc(role.label)} tente de deviner le mot des civils…`}</div><span class="dots"><i></i><i></i><i></i></span>
       ${R.isHost() && !isMe && g.mwGuess == null ? `<button class="btn ghost sm" id="mwSkip">Il ne répond pas ? Passer</button>` : ""}</div>`;
   } else if (g.mwFail) {
     extra = `<div class="mw-box fail">❌ Raté ! « ${esc(g.mwGuess)} » n'est pas le bon mot.</div>`;
@@ -1183,7 +1125,7 @@ function elimOverlay() {
       <div class="elim-av">${avatarHTML(p, "xl")}<div class="cross">✕</div></div>
       <h2 class="ov-title">${isMe ? "Tu es éliminé·e !" : `${esc(p?.name)} est éliminé·e`}</h2>
       ${tally ? `<div class="tally">${tally}</div>` : ""}
-      <div class="role-reveal ${role.cls}"><span>${role.icon}</span> C'était ${e.role === "civil" ? "un " : e.role === "mrwhite" ? "" : "l'"}${e.role === "mrwhite" ? "<b>Mr. White</b>" : `<b>${role.label}</b>`} !</div>
+      <div class="role-reveal ${role.cls}"><span>${role.icon}</span> C'était ${role.article}<b>${role.label}</b> !</div>
       ${extra}
       ${st === "elim" ? (R.isHost() ? `<button class="btn yellow xl" id="nextRound">Manche suivante ➜</button>` : `<div class="waiting">L'hôte lance la manche suivante <span class="dots"><i></i><i></i><i></i></span></div>`) : ""}
     </div>
@@ -1200,8 +1142,8 @@ function bindElim() {
 
 function overOverlay() {
   const rv = S.room.reveal || {};
-  const winTitle = { civil: "Les Civils gagnent !", impostors: "Les Imposteurs gagnent !", mrwhite: "Mr. White a deviné !" }[rv.winner] || "Fin de partie";
-  const winEmo = { civil: "🙂", impostors: "🕵️", mrwhite: "👻" }[rv.winner] || "🏁";
+  const ws = WIN_SCREENS[rv.winner] || { title: "Fin de partie", emo: "🏁" };
+  const winTitle = ws.title, winEmo = ws.emo;
   const iWon = (rv.winners || []).includes(me());
   const players = R.list().filter((p) => rv.roles?.[p.id]).sort((a, b) => (b.score || 0) - (a.score || 0));
   return `
@@ -1216,12 +1158,12 @@ function overOverlay() {
       </div>
       <div class="final-list">
         ${players.map((p) => {
-          const role = ROLE[rv.roles[p.id]];
+          const role = ROLES[rv.roles[p.id]];
           const won = (rv.winners || []).includes(p.id);
           return `<div class="fl ${won ? "won" : ""}">
             ${avatarHTML(p, "sm")}
             <div class="grow"><div class="fl-name">${esc(p.name)}${p.id === me() ? " (toi)" : ""}</div><div class="fl-role ${role.cls}">${role.icon} ${role.label}</div></div>
-            <div class="fl-score">${won ? `<span class="plus">+${POINTS[rv.roles[p.id]]}</span>` : ""}⭐ ${p.score || 0}</div>
+            <div class="fl-score">${won ? `<span class="plus">+${role.points}</span>` : ""}⭐ ${p.score || 0}</div>
           </div>`;
         }).join("")}
       </div>
